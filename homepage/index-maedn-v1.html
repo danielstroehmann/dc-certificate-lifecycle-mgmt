@@ -222,7 +222,9 @@ function drawPieces(){
 drawBoard();drawPieces();
 
 // ═══════════════ STATE ═══════════════
-const G={types:['human','cpu','cpu','cpu'],pieces:[],cur:0,phase:'setup',dice:null,rollsLeft:1,moves:[],ranking:[],started:false};
+const G={types:['human','cpu','cpu','cpu'],pieces:[],cur:0,phase:'setup',dice:null,rollsLeft:1,moves:[],ranking:[],started:false,gen:0};
+let spinTimer=null;
+function later(fn,ms){const g=G.gen;setTimeout(()=>{if(G.gen===g)fn();},ms);}
 const active=p=>G.types[p]!=='off';
 const isCPU=p=>G.types[p]==='cpu';
 const absOf=(p,pos)=>(START[p]+pos)%40;
@@ -317,7 +319,8 @@ function render(){renderPieces();renderPlayers();renderDice();}
 function newGame(){
   const n=G.types.filter(t=>t!=='off').length;
   if(n<2){msg('Mindestens zwei Spieler nötig.','Wähle bei mindestens zwei Farben „Mensch“ oder „Computer“.');return;}
-  ac();G.pieces=P.map(()=>[0,1,2,3].map(()=>({pos:-1})));G.ranking=[];G.started=true;G.dice=null;G.moves=[];
+  ac();G.gen++;if(spinTimer){clearInterval(spinTimer);spinTimer=null;}$('dice').style.transform='';$('dice').classList.remove('rolling');
+  G.pieces=P.map(()=>[0,1,2,3].map(()=>({pos:-1})));G.ranking=[];G.started=true;G.dice=null;G.moves=[];
   G.cur=[0,1,2,3].find(p=>active(p));
   $('log').innerHTML='';log('Neues Spiel gestartet. '+P.filter((_,p)=>active(p)).map(p=>p.name).join(', ')+' spielen.');
   $('btn-start').textContent='Neu starten';$('over').classList.remove('show');
@@ -328,25 +331,25 @@ function startTurn(){
   const n=P[G.cur].name;
   msg(`${chip(G.cur)} ${n} ist am Zug`,isCPU(G.cur)?'Der Computer würfelt …':(G.rollsLeft===3?'Klick auf den Würfel – du hast drei Versuche für eine Sechs.':'Klick auf den Würfel (oder Leertaste).'));
   render();
-  if(isCPU(G.cur))setTimeout(roll,750);
+  if(isCPU(G.cur))later(roll,750);
 }
 function roll(){
   if(G.phase!=='roll'||!G.started)return;
   ac();G.phase='rolling';renderDice();
   const d=$('dice');d.classList.add('rolling');let k=0;
-  const spin=setInterval(()=>{drawDice(1+Math.floor(Math.random()*6),P[G.cur].color);d.style.transform=`rotate(${(Math.random()*40-20)}deg) scale(${1+Math.random()*.15})`;sfx.tick();if(++k>8){clearInterval(spin);d.style.transform='';d.classList.remove('rolling');finishRoll();}},70);
+  spinTimer=setInterval(()=>{drawDice(1+Math.floor(Math.random()*6),P[G.cur].color);d.style.transform=`rotate(${(Math.random()*40-20)}deg) scale(${1+Math.random()*.15})`;sfx.tick();if(++k>8){clearInterval(spinTimer);spinTimer=null;d.style.transform='';d.classList.remove('rolling');finishRoll();}},70);
 }
 function finishRoll(){
   const r=1+Math.floor(Math.random()*6);G.dice=r;G.rollsLeft--;
   const n=P[G.cur].name;log(`${chip(G.cur)} ${n} würfelt <b>${r}</b>`);
   const moves=legalMoves(G.cur,r);
   if(!moves.length){
-    if(G.rollsLeft>0){G.phase='roll';msg(`${chip(G.cur)} ${n} würfelt ${r}`,`Kein Zug möglich – noch ${G.rollsLeft} Versuch${G.rollsLeft>1?'e':''}.`);render();if(isCPU(G.cur))setTimeout(roll,650);return;}
-    msg(`${chip(G.cur)} ${n} würfelt ${r}`,'Kein Zug möglich.');render();setTimeout(nextPlayer,900);return;
+    if(G.rollsLeft>0){G.phase='roll';msg(`${chip(G.cur)} ${n} würfelt ${r}`,`Kein Zug möglich – noch ${G.rollsLeft} Versuch${G.rollsLeft>1?'e':''}.`);render();if(isCPU(G.cur))later(roll,650);return;}
+    msg(`${chip(G.cur)} ${n} würfelt ${r}`,'Kein Zug möglich.');render();later(nextPlayer,900);return;
   }
   G.phase='select';G.moves=moves;render();
-  if(isCPU(G.cur)){msg(`${chip(G.cur)} ${n} würfelt ${r}`,'Der Computer zieht …');setTimeout(()=>doMove(chooseAI(moves)),650);}
-  else if(moves.length===1){msg(`${chip(G.cur)} ${n} würfelt ${r}`,'Nur ein Zug möglich – wird ausgeführt.');setTimeout(()=>doMove(moves[0]),550);}
+  if(isCPU(G.cur)){msg(`${chip(G.cur)} ${n} würfelt ${r}`,'Der Computer zieht …');later(()=>doMove(chooseAI(moves)),650);}
+  else if(moves.length===1){msg(`${chip(G.cur)} ${n} würfelt ${r}`,'Nur ein Zug möglich – wird ausgeführt.');later(()=>doMove(moves[0]),550);}
   else msg(`${chip(G.cur)} ${n} würfelt ${r}`,'Wähle eine markierte Figur.');
 }
 function onPieceClick(p,i){
@@ -361,8 +364,8 @@ function doMove(m){
   let k=0;
   const tickStep=()=>{
     pc.pos=steps[k];placePiece(p,m.i,cellOf(p,m.i),true);sfx.step();k++;
-    if(k<steps.length){setTimeout(tickStep,140);return;}
-    setTimeout(()=>afterMove(m),120);
+    if(k<steps.length){later(tickStep,140);return;}
+    later(()=>afterMove(m),120);
   };
   tickStep();
 }
@@ -374,8 +377,8 @@ function afterMove(m){
   }else if(m.enter){log(`${chip(p)} ${n} bringt eine Figur ins Spiel`);sfx.enter();}
   else if(m.home){log(`${chip(p)} ${n} zieht ins Ziel`);sfx.home();}
   if(hasWon(p)){gameOver(p);return;}
-  if(G.dice===6){log(`${chip(p)} ${n} darf nochmal würfeln`);setTimeout(startTurn,m.capture?1400:500);}
-  else setTimeout(nextPlayer,m.capture?1400:350);
+  if(G.dice===6){log(`${chip(p)} ${n} darf nochmal würfeln`);later(startTurn,m.capture?1400:500);}
+  else later(nextPlayer,m.capture?1400:350);
 }
 function nextPlayer(){
   let p=G.cur;for(let k=0;k<4;k++){p=(p+1)%4;if(active(p)&&!hasWon(p))break;}
