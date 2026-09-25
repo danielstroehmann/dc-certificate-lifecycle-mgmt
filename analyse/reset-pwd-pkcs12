@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+die() { echo "ERROR: $*" >&2; exit 1; }
+
+read_secret() {
+    local prompt="$1" var
+    read -r -p "$prompt" var
+    printf '%s' "$var"
+}
+
+# ── 1. input file ──────────────────────────────────────────────────────────────
+
+echo
+read -r -e -p "Path to PKCS12 file: " INPUT_FILE
+INPUT_FILE="${INPUT_FILE/#\~/$HOME}"
+[ -f "$INPUT_FILE" ] || die "File not found: $INPUT_FILE"
+
+# ── 2. current password ────────────────────────────────────────────────────────
+
+OLD_PASS="$(read_secret "Current password: ")"
+
+openssl pkcs12 -in "$INPUT_FILE" -passin "pass:${OLD_PASS}" -noout 2>/dev/null \
+    || die "Cannot open PKCS12 – wrong password or corrupted file."
+
+echo "File verified."
+echo
+
+# ── 3. new password (twice) ────────────────────────────────────────────────────
+
+NEW_PASS="$(read_secret "New password:     ")"
+[ -n "$NEW_PASS" ] || die "New password must not be empty."
+
+NEW_PASS2="$(read_secret "Confirm password: ")"
+[ "$NEW_PASS" = "$NEW_PASS2" ] || die "Passwords do not match."
+
+# ── 4. new filename ────────────────────────────────────────────────────────────
+
+echo
+read -r -e -p "New filename (without path): " NEW_NAME
+[ -n "$NEW_NAME" ] || die "Filename must not be empty."
+
+NEW_FILE="$(dirname "$INPUT_FILE")/${NEW_NAME}"
+[ "$NEW_FILE" != "$INPUT_FILE" ] || die "New filename is identical to the original."
+[ ! -e "$NEW_FILE" ]             || die "Target already exists: $NEW_FILE"
+
+# ── 5. re-encrypt ──────────────────────────────────────────────────────────────
+
+TMP_PEM="$(mktemp)"
+TMP_P12="$(mktemp)"
+trap 'rm -f "$TMP_PEM" "$TMP_P12"' EXIT
+
+# LibreSSL: export to unencrypted PEM, then re-wrap with new password
+openssl pkcs12 -in "$INPUT_FILE" -passin "pass:${OLD_PASS}" -nodes \
+    -out "$TMP_PEM" 2>/dev/null \
+    || die "Export to PEM failed."
+
+openssl pkcs12 -export -in "$TMP_PEM" \
+    -passin "pass:${NEW_PASS}" -passout "pass:${NEW_PASS}" \
+    -out "$TMP_P12" 2>/dev/null \
+    || die "Re-encryption failed."
+
+# ── 6. verify new file ─────────────────────────────────────────────────────────
+
+openssl pkcs12 -in "$TMP_P12" -passin "pass:${NEW_PASS}" -noout 2>/dev/null \
+    || die "Verification failed – original untouched."
+
+# ── 7. commit ──────────────────────────────────────────────────────────────────
+
+cp "$TMP_P12" "$NEW_FILE" || die "Could not write $NEW_FILE"
+rm -f "$INPUT_FILE"
+
+echo
+echo "Done."
+echo "  New file : $NEW_FILE"
+echo "  Original : deleted"

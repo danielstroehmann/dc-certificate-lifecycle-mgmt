@@ -1,0 +1,170 @@
+#!/usr/bin/env bash
+
+if [[ $# -ge 1 ]]; then
+  HOST="$1"
+  PORT="${2:-443}"
+else
+  read -rp "Host (IP or FQDN): " HOST
+  read -rp "Port [443]: " PORT
+  PORT=${PORT:-443}
+fi
+
+# Fetch the full certificate chain (-showcerts includes all certs)
+CHAIN=$(echo | openssl s_client -connect "${HOST}:${PORT}" -servername "${HOST}" -showcerts 2>/dev/null)
+
+[[ -z "$CHAIN" ]] && { echo "Error: could not connect to ${HOST}:${PORT}"; exit 1; }
+
+# Extract the nth certificate from the chain (1-based index)
+get_cert() {
+  local n=$1
+  echo "$CHAIN" | awk "/-----BEGIN CERTIFICATE-----/{c++} c==$n{print} /-----END CERTIFICATE-----/ && c==$n{exit}"
+}
+
+# Extract CN from a PEM certificate
+cert_cn() {
+  local subj
+  subj=$(echo "$1" | openssl x509 -noout -subject 2>/dev/null)
+  echo "$subj" | grep -oE 'CN\s*=\s*[^,/]+' | head -1 | sed 's/CN\s*=\s*//'
+}
+
+# Decode \xHH hex escape sequences emitted by LibreSSL for non-ASCII DN characters
+decode() {
+  if command -v perl >/dev/null 2>&1; then
+    printf '%s' "$1" | perl -pe 's/\\x([0-9a-fA-F]{2})/chr(hex($1))/ge'
+  else
+    printf '%s' "$1"
+  fi
+}
+
+PEM=$(get_cert 1)
+[[ -z "$PEM" ]] && { echo "Error: no certificate received."; exit 1; }
+
+SIGNING_CA_PEM=$(get_cert 2)
+ROOT_CA_PEM=$(get_cert 3)
+
+SIGNING_CA_CN=$(cert_cn "$SIGNING_CA_PEM")
+ROOT_CA_CN=$(cert_cn "$ROOT_CA_PEM")
+
+# Fall back to issuer field if the chain contains no intermediate cert
+[[ -z "$SIGNING_CA_CN" ]] && \
+  SIGNING_CA_CN=$(echo "$CHAIN" | grep -m1 "^issuer=" | grep -oE 'CN\s*=\s*[^,/]+' | head -1 | sed 's/CN\s*=\s*//')
+
+INFO=$(echo "$PEM" | openssl x509 -noout -subject -issuer -dates -serial -fingerprint 2>/dev/null)
+TEXT=$(echo "$PEM" | openssl x509 -noout -text 2>/dev/null)
+
+# Trim leading/trailing whitespace without xargs (which strips backslash sequences)
+trim() { sed 's/^[[:space:]]*//;s/[[:space:]]*$//'; }
+
+get()  { echo "$INFO" | grep -i "^$1" | sed "s/^[^=]*=\s*//" | trim; }
+getf() { echo "$INFO" | grep -i "^$1" | cut -d= -f2- | trim; }
+
+# Decode hex-escaped subject/issuer strings produced by LibreSSL on macOS
+SUBJECT=$(decode "$(get "subject")")
+
+NOT_BEFORE=$(get "notBefore")
+NOT_AFTER=$(get "notAfter")
+SERIAL=$(getf "serial")
+FP=$(echo "$INFO" | grep -i "fingerprint" | cut -d= -f2 | trim)
+
+# Extract individual DN fields (handles both /FIELD=val and FIELD = val formats)
+dn_field() {
+  local field="$1"
+  echo "$SUBJECT" | grep -oE "(^|[/,[:space:]])${field}\s*=\s*[^/,]+" | head -1 \
+    | sed "s/.*${field}\s*=\s*//"
+}
+
+CN=$(dn_field "CN")
+ORG=$(dn_field "O")
+COUNTRY=$(dn_field "C")
+
+# Collect all DNS SANs as individual array entries - bash 3.2 compatible (macOS)
+SANS=()
+while IFS= read -r san; do
+  [[ -n "$san" ]] && SANS+=("$san")
+done < <(echo "$TEXT" \
+  | grep -A1 "Subject Alternative Name" | tail -1 \
+  | tr ',' '\n' | grep -i "dns:" | sed 's/[[:space:]]*[Dd][Nn][Ss]://g' | sed 's/^[[:space:]]*//')
+
+# Certificate type: DV / OV / EV based on certificate policies OID and subject fields
+if echo "$TEXT" | grep -q "2\.23\.140\.1\.1"; then
+  CERT_TYPE="EV (Extended Validation)"
+elif [[ -n "$ORG" ]]; then
+  CERT_TYPE="OV (Organization Validation)"
+else
+  CERT_TYPE="DV (Domain Validation)"
+fi
+
+# Public vs. private trust: evaluate the verify return code already present in s_client output
+VERIFY_CODE=$(echo "$CHAIN" | grep "Verify return code" | grep -oE '[0-9]+' | head -1)
+if [[ "$VERIFY_CODE" == "0" ]]; then
+  TRUST="Public Trust"
+else
+  TRUST="Private Trust"
+fi
+
+# Certificate expiry: macOS uses date -j -f, Linux uses date -d
+if [[ "$(uname)" == "Darwin" ]]; then
+  EXPIRY_EPOCH=$(date -j -f "%b %d %T %Y %Z" "$NOT_AFTER" "+%s" 2>/dev/null)
+else
+  EXPIRY_EPOCH=$(date -d "$NOT_AFTER" "+%s" 2>/dev/null)
+fi
+
+if [[ -n "$EXPIRY_EPOCH" ]]; then
+  NOW_EPOCH=$(date +%s)
+  DAYS_LEFT=$(( (EXPIRY_EPOCH - NOW_EPOCH) / 86400 ))
+  if   (( DAYS_LEFT < 14 )); then STATUS="CRITICAL – $DAYS_LEFT days remaining"
+  elif (( DAYS_LEFT < 30 )); then STATUS="WARNING – $DAYS_LEFT days remaining"
+  else                             STATUS="OK – $DAYS_LEFT days remaining"
+  fi
+fi
+
+# ── Output ────────────────────────────────────────────────────────────────────
+
+IND="  "
+PAD="    "
+LW=16
+DSEP="══════════════════════════════════════════════════════════"
+SSEP="──────────────────────────────────────────────────────────"
+
+lbl() { printf "${PAD}%-${LW}s  %s\n" "$1" "$2"; }
+sec() { echo; echo "${IND}${SSEP}"; echo; }
+
+echo
+echo "${IND}${DSEP}"
+printf "${PAD}TLS Certificate  %s:%s\n" "$HOST" "$PORT"
+echo "${IND}${DSEP}"
+
+echo
+lbl "CN"           "${CN:-n/a}"
+[[ -n "$ORG"     ]] && lbl "Organisation"  "$ORG"
+[[ -n "$COUNTRY" ]] && lbl "Country"       "$COUNTRY"
+lbl "Type"         "$CERT_TYPE"
+lbl "Trust"        "$TRUST"
+
+sec
+lbl "Valid From"   "${NOT_BEFORE:-n/a}"
+lbl "Valid Until"  "${NOT_AFTER:-n/a}"
+[[ -n "$STATUS" ]] && lbl "Status"        "$STATUS"
+
+if [[ -n "$SIGNING_CA_CN" ]] || [[ -n "$ROOT_CA_CN" ]]; then
+  sec
+  [[ -n "$SIGNING_CA_CN" ]] && lbl "Signing CA"  "$SIGNING_CA_CN"
+  [[ -n "$ROOT_CA_CN"    ]] && lbl "Root CA"     "$ROOT_CA_CN"
+fi
+
+sec
+lbl "Serial"       "${SERIAL:-n/a}"
+lbl "Fingerprint"  "${FP:-n/a}"
+
+if (( ${#SANS[@]} > 0 )); then
+  sec
+  lbl "SANs" "(${#SANS[@]} entries)"
+  echo
+  for san in "${SANS[@]}"; do
+    lbl "" "$san"
+  done
+fi
+
+echo
+echo "${IND}${DSEP}"
+echo
