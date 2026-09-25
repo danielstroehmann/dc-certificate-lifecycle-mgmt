@@ -1,4 +1,4 @@
-# dc-tlm
+# dc-certificate-lifecycle-mgmt
 
 Scripts for certificate lifecycle management with DigiCert ONE Trust Lifecycle Manager (TLM): issuing certificates via ACME and EST, delivering and installing them through the DigiCert ONE agent, and inspecting the result. Everything is plain shell, PowerShell, batch and static HTML, built for labs, demos and proof-of-concepts. Secrets and parameters never live in the scripts; each directory has an interactive generator that writes a git-ignored `.env`.
 
