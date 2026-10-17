@@ -7,7 +7,7 @@ and then runs a *post-delivery script* that installs it. The scripts fall into t
 | Group | Scripts | Runs on |
 |-------|---------|---------|
 | Trigger: creates the AWR in TLM via the API | `awr-api-trigger-comfort.sh`, `awr-api-trigger-comfort.ps1` | your workstation (macOS/Linux, Windows) |
-| Post-delivery: installs the delivered certificate | `awr-post-iis-all.ps1`, `awr-post-iis-per-ports.ps1`, `awr-post-docker-restart.sh`, `awr-post-fortiweb.sh`, `awr-post-config-example.sh` | the agent machine, started by the agent |
+| Post-delivery: installs the delivered certificate | `awr-post-iis-all.ps1`, `awr-post-iis-per-ports.ps1`, `awr-post-docker-restart.sh`, `awr-post-docker-restart-pfx.sh`, `awr-post-fortiweb.sh`, `awr-post-config-example.sh` | the agent machine, started by the agent |
 | Simulator: runs a post-delivery script locally, without TLM and without the agent | `awr-simulator.sh`, `awr-simulator.ps1` | the agent machine, or any test box |
 
 `README.md` explains the one-time step that has to come first on a Windows agent: allowing
@@ -111,6 +111,29 @@ No parameters. Expects a **pem** delivery: `files[0]` is the certificate, `files
 key. Copies them to `/etc/digicert/certs/server.crt` and `server.key`, sets permissions
 and reloads nginx inside the `webserver` container (`docker exec webserver nginx -s reload`).
 Installs `jq` with apt if missing.
+
+### awr-post-docker-restart-pfx.sh  (Linux)
+
+Same result as `awr-post-docker-restart.sh`, for an AWR with enrollment format **PFX**. No
+parameters. Takes the `.pfx`/`.p12` from `files` and the `password` from the delivery data,
+extracts the certificate plus CA chain and the unencrypted private key, and installs them as
+`/etc/digicert/certs/server.crt` (leaf + chain, `644`) and `server.key` (`600`). Then runs
+`nginx -t` and `nginx -s reload` inside the `webserver` container.
+
+- PKCS#12 files with older encryption (RC2/3DES) are opened with `-legacy` automatically
+  (needed with OpenSSL 3).
+- Nothing is replaced unless the key matches the certificate; the new files are written next
+  to the old ones and renamed, so nginx never reads half a file.
+- The password goes to openssl through an environment variable, never on the command line,
+  and is not logged.
+- Log: `/var/log/digicert/awr-docker-restart-pfx.log` (falls back to `/tmp` if that directory
+  cannot be created). `TARGET_DIR`, `CONTAINER` and `LOGFILE` can be overridden through the
+  environment for tests.
+- Exit `10` delivery data unusable or no PFX delivered, `11` PFX cannot be opened (wrong
+  password) or key and certificate do not match, `12` writing the files or the nginx
+  test/reload failed, `13` unexpected error.
+
+Needs `openssl`, `docker`, and `jq` (installed with apt if missing).
 
 ### awr-post-config-example.sh  (Linux, example)
 
@@ -222,6 +245,11 @@ returns `14` and TLM shows the AWR as failed.
 sudo ./awr-simulator.sh
   Parameter 1:                      <Enter>
   Post-delivery script  ->  awr-post-docker-restart.sh
+
+# same with a PFX delivery
+sudo ./awr-simulator.sh --format pfx
+  Parameter 1:                      <Enter>
+  Post-delivery script  ->  awr-post-docker-restart-pfx.sh
 ```
 
 The trigger sends the format you pass with `--format` straight through to the API. It has
