@@ -3,8 +3,7 @@
 # Reads the delivery data from DC1_POST_SCRIPT_DATA (base64-encoded JSON), takes the PKCS#12
 # file (enrollment format PFX) and its password, extracts certificate plus chain and the
 # private key, installs them as /etc/digicert/certs/server.crt and server.key and reloads
-# nginx inside the "webserver" container. PFX counterpart of awr-post-docker-restart.sh,
-# which expects a pem delivery (crt + key).
+# nginx inside the "webserver" container.
 #
 # Contract with the agent: no output on stdout or stderr, everything goes to the log file;
 # result only as exit code. 0 = OK, 10 = delivery data unusable, 11 = certificate/key

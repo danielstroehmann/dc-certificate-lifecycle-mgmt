@@ -7,7 +7,7 @@ and then runs a *post-delivery script* that installs it. The scripts fall into t
 | Group | Scripts | Runs on |
 |-------|---------|---------|
 | Trigger: creates the AWR in TLM via the API | `awr-api-trigger-comfort.sh`, `awr-api-trigger-comfort.ps1` | your workstation (macOS/Linux, Windows) |
-| Post-delivery: installs the delivered certificate | `awr-post-iis-all.ps1`, `awr-post-iis-per-ports.ps1`, `awr-post-docker-restart.sh`, `awr-post-docker-restart-pfx.sh`, `awr-post-fortiweb.sh`, `awr-post-config-example.sh` | the agent machine, started by the agent |
+| Post-delivery: installs the delivered certificate | `awr-post-iis-all.ps1`, `awr-post-iis-per-ports.ps1`, `awr-post-docker-restart-pfx.sh`, `awr-post-fortiweb.sh`, `awr-post-config-example.sh` | the agent machine, started by the agent |
 | Simulator: runs a post-delivery script locally, without TLM and without the agent | `awr-simulator.sh`, `awr-simulator.ps1` | the agent machine, or any test box |
 
 `README.md` explains the one-time step that has to come first on a Windows agent: allowing
@@ -105,17 +105,9 @@ the port list is the intent. Same log file as above.
 Exit `0` as soon as at least one binding was updated or already current, `14` when none
 was, so a certificate that was rolled out for nothing is visible in TLM.
 
-### awr-post-docker-restart.sh  (Linux)
+### awr-post-docker-restart-pfx.sh  (Linux, nginx in Docker)
 
-No parameters. Expects a **pem** delivery: `files[0]` is the certificate, `files[1]` the
-key. Copies them to `/etc/digicert/certs/server.crt` and `server.key`, sets permissions
-and reloads nginx inside the `webserver` container (`docker exec webserver nginx -s reload`).
-Installs `jq` with apt if missing.
-
-### awr-post-docker-restart-pfx.sh  (Linux)
-
-Same result as `awr-post-docker-restart.sh`, for an AWR with enrollment format **PFX**. No
-parameters. Takes the `.pfx`/`.p12` from `files` and the `password` from the delivery data,
+For an AWR with enrollment format **PFX**. No parameters. Takes the `.pfx`/`.p12` from `files` and the `password` from the delivery data,
 extracts the certificate plus CA chain and the unencrypted private key, and installs them as
 `/etc/digicert/certs/server.crt` (leaf + chain, `644`) and `server.key` (`600`). Then runs
 `nginx -t` and `nginx -s reload` inside the `webserver` container.
@@ -137,7 +129,7 @@ Needs `openssl`, `docker`, and `jq` (installed with apt if missing).
 
 ### awr-post-config-example.sh  (Linux, example)
 
-Same pem input. Writes a complete nginx configuration for `docker.stroehmi.casa` (HTTP to
+Expects a **pem** delivery (`files[0]` certificate, `files[1]` key). Writes a complete nginx configuration for `docker.stroehmi.casa` (HTTP to
 HTTPS redirect plus the HTTPS server with the delivered files) to the path given as first
 parameter, default `/usr/local/docker/server/data/nginx/nginx.conf`, then restarts the
 `proxy` container. Template for "generate config, then restart" style deployments.
@@ -241,12 +233,7 @@ returns `14` and TLM shows the AWR as failed.
 ### Linux, nginx in Docker
 
 ```bash
-# on the Docker host, format pem is the default
-sudo ./awr-simulator.sh
-  Parameter 1:                      <Enter>
-  Post-delivery script  ->  awr-post-docker-restart.sh
-
-# same with a PFX delivery
+# on the Docker host, simulate a PFX delivery
 sudo ./awr-simulator.sh --format pfx
   Parameter 1:                      <Enter>
   Post-delivery script  ->  awr-post-docker-restart-pfx.sh
